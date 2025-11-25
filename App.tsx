@@ -5,7 +5,7 @@ import { CodeEditor } from './components/CodeEditor';
 import { MemoryVisualizer } from './components/MemoryVisualizer';
 import { Console } from './components/Console';
 import { Controls } from './components/Controls';
-import { analyzeCode } from './services/geminiService';
+import { analyzeCodeLocally } from './services/localAnalysisService'; // Changed import
 import { executeCppCode } from './services/pistonService';
 import { executePythonCode } from './services/pyodideService';
 import { DEFAULT_CPP, DEFAULT_PYTHON } from './constants';
@@ -22,9 +22,6 @@ function App() {
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [consoleInput, setConsoleInput] = useState('');
   
-  // Single source of truth for console text.
-  // In 'Run' mode: shows full execution output.
-  // In 'Visualize' mode: shows cumulative output for the current step.
   const [consoleOutput, setConsoleOutput] = useState('');
 
   const handleLanguageChange = (newLang: Language) => {
@@ -46,65 +43,40 @@ function App() {
     setConsoleOutput('');
   };
 
-  // Helper to run code (Output Only)
-  const runCodeInternal = async (): Promise<{ success: boolean; output: string }> => {
-     let result = { success: false, output: '' };
-     
-     if (language === 'cpp') {
-        const res = await executeCppCode(code, consoleInput);
-        result = res;
-     } else {
-        const res = await executePythonCode(code, consoleInput);
-        result = res;
-     }
-     return result;
-  };
-
   // Button: Run Code (Compilation / Execution only)
   const handleRun = async () => {
     setIsAnalyzing(true);
     setConsoleOutput('> Compiling/Executing...\n');
-    setSteps([]); // Clear visualization on simple run
+    setSteps([]); 
     setFlowchart(undefined);
     setCurrentStepIndex(-1);
 
-    const result = await runCodeInternal();
+    let result;
+    if (language === 'cpp') {
+       result = await executeCppCode(code, consoleInput);
+    } else {
+       result = await executePythonCode(code, consoleInput);
+    }
     
     setConsoleOutput(result.output);
     setIsAnalyzing(false);
   };
 
-  // Button: Visualize Memory (Generates steps)
+  // Button: Visualize Memory (Uses Local Instrumentation)
   const handleVisualize = async () => {
-    if (!process.env.API_KEY) {
-        alert("Please provide an API Key in the environment.");
-        return;
-    }
-
     setIsAnalyzing(true);
-    setConsoleOutput('> Pre-calculating execution path...\n');
+    setConsoleOutput('> Instrumenting and analyzing locally...\n');
     setSteps([]); 
     setFlowchart(undefined);
     setCurrentStepIndex(-1);
 
-    // 1. Run "Output Only" first to get a ground truth to help the AI
-    const runResult = await runCodeInternal();
-    
-    if (!runResult.success) {
-        setConsoleOutput(`> Compilation/Runtime Error. Cannot visualize.\n\n${runResult.output}`);
-        setIsAnalyzing(false);
-        return;
-    }
-
-    setConsoleOutput('> Analyzing memory trace (AI)...\n');
-
-    // 2. Analyze with Gemini
-    const result = await analyzeCode(code, language, runResult.output);
+    // Call Local Analysis Service (No AI)
+    const result = await analyzeCodeLocally(code, language, consoleInput);
 
     setIsAnalyzing(false);
 
     if (result.error) {
-      setConsoleOutput(`Error: ${result.error}`);
+      setConsoleOutput(`Analysis Error: ${result.error}`);
       return;
     }
 
@@ -112,9 +84,8 @@ function App() {
       setSteps(result.steps);
       setFlowchart(result.flowchart);
       setCurrentStepIndex(0);
-      // The useEffect below will handle updating the consoleOutput to match step 0
     } else {
-      setConsoleOutput('> No steps generated. Check code syntax.');
+      setConsoleOutput('> Trace complete but no steps captured. (Did the code run?)');
     }
   };
 
@@ -127,19 +98,18 @@ function App() {
     });
   }, [steps.length]);
 
-  // Sync console output with current visualization step
   useEffect(() => {
     if (currentStepIndex >= 0 && steps[currentStepIndex]) {
+      // In local tracing mode, we captured the console state at each step.
+      // If consoleOutput is provided in the step, use it.
+      // Otherwise, we might want to just show the cumulative output.
       const step = steps[currentStepIndex];
-      
-      // Calculate cumulative output up to this step
-      let accumulatedOutput = '> Visualization Mode Started\n';
-      for (let i = 0; i <= currentStepIndex; i++) {
-        if (steps[i].consoleOutput) {
-          accumulatedOutput += steps[i].consoleOutput + '\n';
-        }
+      // Note: Python tracer doesn't easily capture partial stdout mid-line without buffering overrides, 
+      // but C++ instrumentation keeps track of it. 
+      // For now, we rely on the step's consoleOutput if present.
+      if (step.consoleOutput !== undefined) {
+         setConsoleOutput(step.consoleOutput);
       }
-      setConsoleOutput(accumulatedOutput);
     }
   }, [currentStepIndex, steps]);
 
