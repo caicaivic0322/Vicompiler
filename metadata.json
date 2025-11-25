@@ -1,0 +1,5 @@
+{
+  "name": "VizCompiler",
+  "description": "A visual C++ and Python compiler for teaching memory management, stack frames, and heap allocation.",
+  "requestFramePermissions": []
+}
